@@ -48,13 +48,7 @@ class TaskSystemParallelSpawn: public ITaskSystem {
  * documentation of the ITaskSystem interface.
  */
 class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
-    private:
-        void workerThread();
-        std::vector<std::thread> threads;
-        std::queue<std::function<void()>> taskQueue;
-        std::mutex queueMutex;
-        std::condition_variable condition;
-        bool stop;
+
     public:
 
         TaskSystemParallelThreadPoolSpinning(int num_threads);
@@ -74,9 +68,17 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
  * itasksys.h for documentation of the ITaskSystem interface.
  */
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
+    private:
+        void workerThread();
+        std::vector<std::thread> threads;
+        std::queue<std::function<void()>> taskQueue;
+        std::mutex queueMutex;
+        std::condition_variable condition;
+        bool stop;
     public:
         TaskSystemParallelThreadPoolSleeping(int num_threads);
         ~TaskSystemParallelThreadPoolSleeping();
+        void workerThread();
         const char* name();
         void run(IRunnable* runnable, int num_total_tasks);
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
