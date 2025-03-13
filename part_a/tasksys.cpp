@@ -1,5 +1,11 @@
 #include "tasksys.h"
+#include <thread>
+#include <functional>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
 
+using namespace std;
 
 IRunnable::~IRunnable() {}
 
@@ -68,9 +74,20 @@ void TaskSystemParallelSpawn::run(IRunnable* runnable, int num_total_tasks) {
     // tasks sequentially on the calling thread.
     //
 
+    std::vector<std::thread> threads;
     for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
+        threads.push_back(std::thread([runnable, i, num_total_tasks]() {
+            runnable->runTask(i, num_total_tasks);
+        }));
     }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+
+    // for (int i = 0; i < num_total_tasks; i++) {
+    //     runnable->runTask(i, num_total_tasks);
+    // }
 }
 
 TaskID TaskSystemParallelSpawn::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
@@ -101,6 +118,47 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back(&TaskSystemParallelThreadPoolSpinning::workerThread, this);
+    }
+}
+
+TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
+    {
+        std::unique_lock<std::mutex> lock(queueMutex);
+        stop = true;
+    }
+    condition.notify_all();
+    for (std::thread &thread : threads) {
+        thread.join();
+    }
+}
+
+void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) {
+    for (int i = 0; i < num_total_tasks; ++i) {
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            taskQueue.push([runnable, i, num_total_tasks]() {
+                runnable->runTask(i, num_total_tasks);
+            });
+        }
+        condition.notify_one();
+    }
+}
+
+
+void TaskSystemParallelThreadPoolSpinning::workerThread() {
+    while (true) {
+        std::function<void()> task;
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            condition.wait(lock, [this] { return stop || !taskQueue.empty(); });
+            if (stop && taskQueue.empty()) return;
+            task = std::move(taskQueue.front());
+            taskQueue.pop();
+        }
+        task();
+    }
 }
 
 TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {}
