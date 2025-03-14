@@ -4,6 +4,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <queue>
+#include <iostream>
+#include <atomic>
 
 using namespace std;
 
@@ -120,26 +122,53 @@ const char* TaskSystemParallelThreadPoolSpinning::name() {
     return "Parallel + Thread Pool + Spin";
 }
 
-TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads): ITaskSystem(num_threads) {
+TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads): ITaskSystem(num_threads),stop(false) {
     //
     // TODO: CS149 student implementations may decide to perform setup
     // operations (such as thread pool construction) here.
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    for (int i = 0; i < num_threads; ++i) {
+       threads.emplace_back(&TaskSystemParallelThreadPoolSpinning::workerThread, this);
+    }
 
 }
 
 TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
+    stop = true;
+     for (std::thread &thread : threads) {
+        thread.join();
+    }
 
 }
 
 void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) {
-    
+    for (int i = 0; i < num_total_tasks; ++i) {
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            taskQueue.push([runnable, i, num_total_tasks]() {
+                runnable->runTask(i, num_total_tasks);
+            });
+        }
+    }
 }
 
 void TaskSystemParallelThreadPoolSpinning::workerThread() {
-
+    while (!stop) 
+    {  // Keep spinning until stop is true
+        std::function<void()> task;
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+           if (!taskQueue.empty()) {
+                task = std::move(taskQueue.front());                 
+                taskQueue.pop();
+            }
+        }
+        if (task) {
+            task(); // Execute task outside of mutex lock
+        }
+    }
 }
 
 
@@ -172,7 +201,7 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
     // (requiring changes to tasksys.h).
     //
     for (int i = 0; i < num_threads; ++i) {
-        threads.emplace_back(&TaskSystemParallelThreadPoolSpinning::workerThread, this);
+        threads.emplace_back(&TaskSystemParallelThreadPoolSleeping::workerThread, this);
     }
 }
 
@@ -183,6 +212,7 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    
     {
         std::unique_lock<std::mutex> lock(queueMutex);
         stop = true;
