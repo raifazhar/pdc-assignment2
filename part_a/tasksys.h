@@ -85,6 +85,7 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         std::queue<std::function<void()>> taskQueue;
         std::mutex queueMutex;
         std::condition_variable condition;
+        int remaining_tasks;
         bool stop;
     public:
         TaskSystemParallelThreadPoolSleeping(int num_threads);
