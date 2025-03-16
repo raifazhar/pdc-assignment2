@@ -133,6 +133,12 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+
+    currentTask = 0;
+    activeTasks = 0;
+    for (int i = 0; i < num_threads; ++i) {
+        threads.emplace_back(&TaskSystemParallelThreadPoolSleeping::workerThread, this);
+    }
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
@@ -142,20 +148,23 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+
+    {
+        std::unique_lock<std::mutex> lock(queueMutex);
+        stop = true;
+        while (!readyQueue.empty()) {
+            readyQueue.pop();  // Clear all remaining tasks
+        }
+    }
+    condition.notify_all();
+    for (std::thread &thread : threads) {
+        thread.join();
+    }
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
-
-
-    //
-    // TODO: CS149 students will modify the implementation of this
-    // method in Parts A and B.  The implementation provided below runs all
-    // tasks sequentially on the calling thread.
-    //
-
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
-    }
+    runAsyncWithDeps(runnable, num_total_tasks, {});
+    sync();
 }
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
@@ -165,19 +174,110 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     //
     // TODO: CS149 students will implement this method in Part B.
     //
+    
+    std::queue<std::function<void()>> taskQueue;
 
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
+    for (int i = 0;i < num_total_tasks; i++){
+        taskQueue.push([runnable, i, num_total_tasks](){
+            runnable->runTask(i, num_total_tasks);
+        });
     }
 
-    return 0;
-}
+    std::lock_guard<std::mutex> lock(queueMutex);
+    waitingQueue.push_back(TaskStruct {
+        currentTask,
+        deps,
+        taskQueue
+    });
+
+    if (deps.empty()){
+        ConvertToReady();
+    }
+    return currentTask++;
+}   
 
 void TaskSystemParallelThreadPoolSleeping::sync() {
+    std::unique_lock<std::mutex> lock(queueMutex);
+    condition.wait(lock, [this] { return waitingQueue.empty() && readyQueue.empty(); });
+}
 
-    //
-    // TODO: CS149 students will modify the implementation of this method in Part B.
-    //
+void TaskSystemParallelThreadPoolSleeping::workerThread() {
+    while (true) {
+        std::function<void()> task;
+        TaskID taskID;
 
-    return;
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            condition.wait(lock, [this] { return stop || !readyQueue.empty(); });
+
+            if (stop && readyQueue.empty()) return;
+
+            // Extract and remove a task
+            taskID = readyQueue.front().taskID;
+            task = std::move(readyQueue.front().task); // Take the task
+            readyQueue.pop(); // Remove from readyQueue
+            activeTasks++;
+        }
+
+        // Execute the task outside the lock
+        task();
+
+        // Check if all tasks for this taskID are done
+        bool taskGotReady = false;
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            activeTasks--;
+            
+            bool isAnyOtherTaskForThisTaskID = false;
+
+            std::queue<ReadyTaskStruct> tempQueue = readyQueue;
+
+            while (!tempQueue.empty()) {
+                if (tempQueue.front().taskID == taskID) {
+                    isAnyOtherTaskForThisTaskID true; // Found the taskID
+                }
+                tempQueue.pop(); // Move to next element
+            }
+
+            if (!isAnyOtherTaskForThisTaskID) {  // No more tasks with this TaskID
+                for (auto& taskStruct : waitingQueue) {
+                    auto& deps = taskStruct.deps;
+                    size_t beforeSize = deps.size();
+                    
+                    // Remove taskID from dependencies
+                    deps.erase(std::remove(deps.begin(), deps.end(), taskID), deps.end());
+
+                    if (beforeSize > 0 && deps.empty()) {  // If it was dependent and now isn't
+                        taskGotReady = true;
+                    }
+                }
+            }
+
+            if (taskGotReady) {
+                ConvertToReady();
+            }
+
+
+            if (readyQueue.empty() && waitingQueue.empty() && activeTasks == 0){
+                condition.notify_all();
+            }
+        }
+    }
+}
+
+
+void TaskSystemParallelThreadPoolSleeping::ConvertToReady() {
+    for (auto it = waitingQueue.begin(); it != waitingQueue.end(); ) {
+        if (it->deps.empty()) {
+            // Move each subtask individually to the map under the correct TaskID
+            for (auto& subtask : it->taskArray) {
+                readyQueue.emplace_back(it->taskID, std::move(it->taskArray.front()));  // Store subtasks per TaskID
+                it->taskArray.pop();
+                condition.notify_one();  // Wake up a worker thread
+            }
+            it = waitingQueue.erase(it);  // Remove from waitingQueue after moving tasks
+        } else {
+            ++it;
+        }
+    }    
 }
