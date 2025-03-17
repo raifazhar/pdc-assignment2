@@ -4,6 +4,7 @@
 #include "itasksys.h"
 #include <atomic>
 #include <queue>
+#include <deque>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
@@ -85,7 +86,7 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
     private:
         std::vector<std::thread> threads;
         std::vector<WaitingTaskStruct> waitingQueue;
-        std::queue<ReadyTaskStruct> readyQueue;
+        std::deque<ReadyTaskStruct> readyQueue;
         std::mutex queueMutex;
         std::condition_variable condition;
         std::condition_variable syncCondition;

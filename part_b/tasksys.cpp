@@ -153,7 +153,7 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
         std::unique_lock<std::mutex> lock(queueMutex);
         stop = true;
         while (!readyQueue.empty()) {
-            readyQueue.pop();  // Clear all remaining tasks
+            readyQueue.pop_front();  // Clear all remaining tasks
         }
     }
     condition.notify_all();
@@ -196,8 +196,11 @@ void TaskSystemParallelThreadPoolSleeping::sync() {
 
 void TaskSystemParallelThreadPoolSleeping::workerThread() {
     while (true) {
-        std::function<void()> task;
         TaskID taskID;
+        ReadyTaskStruct readyTaskStruct;
+        int i;
+        IRunnable *runnable;
+        int numTotalTasks;
         bool taskGotReady = false;
         bool taskGotCompleted = false;
 
@@ -207,29 +210,27 @@ void TaskSystemParallelThreadPoolSleeping::workerThread() {
 
             if (stop && readyQueue.empty()) return;
 
-            ReadyTaskStruct& readyTaskStruct = readyQueue.front(); // Get a reference to the front element
-            taskID = readyTaskStruct.taskID; // Get the taskID
+            taskID = readyQueue[0].taskID; // Get the taskID
 
             // Create the task as a lambda
-            task = [taskID, runnable = readyTaskStruct.runnable, numTotalTasks = readyTaskStruct.numTotalTasks, remainingTasks = readyTaskStruct.remainingTasks]() {
-                int i = numTotalTasks - remainingTasks;
-                runnable->runTask(i, numTotalTasks);
-            };
+            i = readyQueue[0].numTotalTasks - readyQueue[0].remainingTasks;
+            runnable = readyQueue[0].runnable;
+            numTotalTasks = readyQueue[0].numTotalTasks;
+
             // Decrement remainingTasks in the queue
-            readyTaskStruct.remainingTasks--;
+            readyQueue[0].remainingTasks--;
 
             // If remainingTasks reaches 0, pop the element from the queue
-            if (readyTaskStruct.remainingTasks == 0) {
-                readyQueue.pop();
+            if (readyQueue[0].remainingTasks <= 0) {
+                readyQueue.pop_front();
                 taskGotCompleted = true;
             }
             
-            // Remove from readyQueue
             activeTasks++;
         }
 
         // Execute the task outside the lock
-        task();
+        runnable->runTask(i, numTotalTasks);
 
         // Check if all tasks for this taskID are done
         {
@@ -267,7 +268,7 @@ void TaskSystemParallelThreadPoolSleeping::workerThread() {
 void TaskSystemParallelThreadPoolSleeping::ConvertToReady() {
     for (auto it = waitingQueue.begin(); it != waitingQueue.end(); ) {
         if (it->deps.empty()) {
-            readyQueue.push(ReadyTaskStruct{
+            readyQueue.push_back(ReadyTaskStruct{
                 it->taskID,
                 it->numTotalTasks,
                 it->numTotalTasks,
