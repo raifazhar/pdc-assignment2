@@ -2,8 +2,13 @@
 #define _TASKSYS_H
 
 #include "itasksys.h"
-#include <deque>
-
+#include <atomic>
+#include <queue>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <functional>
+#include <algorithm>
 
 /*
  * TaskSystemSerial: This class is the student's implementation of a
@@ -64,19 +69,19 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
 
 struct WaitingTaskStruct{
     TaskID taskID;
-    const std::vector<TaskID> deps;
-    std::queue<function<void()>> taskArray;
-}
+    std::vector<TaskID> deps;
+    std::queue<std::function<void()>> taskArray;
+};
 
 struct ReadyTaskStruct{
     TaskID taskID;
     std::function<void()> task;
-}
+};
 
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
     private:
         std::vector<std::thread> threads;
-        std::queue<WaitingTaskStruct> waitingQueue;
+        std::vector<WaitingTaskStruct> waitingQueue;
         std::queue<ReadyTaskStruct> readyQueue;
         std::mutex queueMutex;
         std::condition_variable condition;

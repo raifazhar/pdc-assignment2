@@ -184,7 +184,7 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     }
 
     std::lock_guard<std::mutex> lock(queueMutex);
-    waitingQueue.push_back(TaskStruct {
+    waitingQueue.push_back(WaitingTaskStruct {
         currentTask,
         deps,
         taskQueue
@@ -234,7 +234,7 @@ void TaskSystemParallelThreadPoolSleeping::workerThread() {
 
             while (!tempQueue.empty()) {
                 if (tempQueue.front().taskID == taskID) {
-                    isAnyOtherTaskForThisTaskID true; // Found the taskID
+                    isAnyOtherTaskForThisTaskID = true; // Found the taskID
                 }
                 tempQueue.pop(); // Move to next element
             }
@@ -270,14 +270,15 @@ void TaskSystemParallelThreadPoolSleeping::ConvertToReady() {
     for (auto it = waitingQueue.begin(); it != waitingQueue.end(); ) {
         if (it->deps.empty()) {
             // Move each subtask individually to the map under the correct TaskID
-            for (auto& subtask : it->taskArray) {
-                readyQueue.emplace_back(it->taskID, std::move(it->taskArray.front()));  // Store subtasks per TaskID
+            while (!it->taskArray.empty()) {
+                readyQueue.push(ReadyTaskStruct{it->taskID, std::move(it->taskArray.front())});
                 it->taskArray.pop();
                 condition.notify_one();  // Wake up a worker thread
-            }
+            }            
             it = waitingQueue.erase(it);  // Remove from waitingQueue after moving tasks
         } else {
             ++it;
         }
     }    
 }
+
