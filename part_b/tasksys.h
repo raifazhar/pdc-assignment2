@@ -70,12 +70,15 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
 struct WaitingTaskStruct{
     TaskID taskID;
     std::vector<TaskID> deps;
-    std::queue<std::function<void()>> taskArray;
+    int numTotalTasks;
+    IRunnable *runnable;
 };
 
 struct ReadyTaskStruct{
     TaskID taskID;
-    std::function<void()> task;
+    int numTotalTasks;
+    int remainingTasks;
+    IRunnable *runnable;
 };
 
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
@@ -85,6 +88,7 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         std::queue<ReadyTaskStruct> readyQueue;
         std::mutex queueMutex;
         std::condition_variable condition;
+        std::condition_variable syncCondition;
         bool stop;
         TaskID currentTask;
         std::atomic<int> activeTasks;
