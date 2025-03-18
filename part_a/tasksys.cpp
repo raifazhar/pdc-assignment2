@@ -144,7 +144,7 @@ TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
 }
 
 void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) {
-    std::atomic<int> remaining_tasks{num_total_tasks};  // ✅ Correct
+    std::atomic<int> remaining_tasks{num_total_tasks}; 
 
     
     for (int i = 0; i < num_total_tasks; ++i) {
@@ -252,7 +252,11 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
         }
         condition.notify_one();
     }
+
+    // ✅ Wait until all tasks are completed
+    sync();
 }
+
 
 void TaskSystemParallelThreadPoolSleeping::workerThread() {
     while (true) {
