@@ -135,7 +135,7 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
     //
 
     currentTask = 0;
-    activeTasks = 0;
+    stop = false;
     for (int i = 0; i < num_threads; ++i) {
         threads.emplace_back(&TaskSystemParallelThreadPoolSleeping::workerThread, this);
     }
@@ -148,15 +148,8 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
-
-    {
-        std::unique_lock<std::mutex> lock(queueMutex);
-        stop = true;
-        while (!readyQueue.empty()) {
-            readyQueue.pop_front();  // Clear all remaining tasks
-        }
-    }
-    condition.notify_all();
+    stop = true;
+    readyCondition.notify_all();
     for (std::thread &thread : threads) {
         thread.join();
     }
@@ -174,111 +167,159 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     //
     // TODO: CS149 students will implement this method in Part B.
     //
-
-    std::lock_guard<std::mutex> lock(queueMutex);
-    waitingQueue.push_back(WaitingTaskStruct {
-        currentTask,
-        deps,
-        num_total_tasks,
-        runnable
-    });
-
-    if (deps.empty()){
-        ConvertToReady();
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        waitingTasks.push_back(WaitingTaskStruct {
+            currentTask,
+            deps,
+            num_total_tasks,
+            runnable
+        });
     }
+
+    AdjustDeps();
+
     return currentTask++;
 }   
 
 void TaskSystemParallelThreadPoolSleeping::sync() {
+    if (readyTasks.size() == 0 && waitingTasks.size() == 0 && runningTasks.size() == 0){
+        return;
+    }
     std::unique_lock<std::mutex> lock(queueMutex);
-    syncCondition.wait(lock, [this] { return waitingQueue.empty() && readyQueue.empty() && activeTasks == 0; });
+
+    syncCondition.wait(lock, [this]{
+        return waitingTasks.empty() && readyTasks.empty() && runningTasks.empty();
+    });
 }
 
 void TaskSystemParallelThreadPoolSleeping::workerThread() {
     while (true) {
-        TaskID taskID;
         ReadyTaskStruct readyTaskStruct;
-        int i;
+        TaskID taskID;
+        int subTaskIndex;
         IRunnable *runnable;
         int numTotalTasks;
-        bool taskGotReady = false;
-        bool taskGotCompleted = false;
 
         {
             std::unique_lock<std::mutex> lock(queueMutex);
-            condition.wait(lock, [this] { return stop || !readyQueue.empty(); });
+            readyCondition.wait(lock, [this] { return stop || !readyTasks.empty(); });
 
-            if (stop && readyQueue.empty()) return;
+            if (stop) return;
+            readyTaskStruct = readyTasks[0];
 
-            taskID = readyQueue[0].taskID; // Get the taskID
+            taskID = readyTasks[0].taskID;
+            subTaskIndex = readyTasks[0].subTaskIndex;
+            runnable = readyTasks[0].runnable;
+            numTotalTasks = readyTasks[0].numTotalTasks;
 
-            // Create the task as a lambda
-            i = readyQueue[0].numTotalTasks - readyQueue[0].remainingTasks;
-            runnable = readyQueue[0].runnable;
-            numTotalTasks = readyQueue[0].numTotalTasks;
-
-            // Decrement remainingTasks in the queue
-            readyQueue[0].remainingTasks--;
-
-            // If remainingTasks reaches 0, pop the element from the queue
-            if (readyQueue[0].remainingTasks <= 0) {
-                readyQueue.pop_front();
-                taskGotCompleted = true;
-            }
-            
-            activeTasks++;
+            readyTasks.pop_front();
+        
+            //add to running vector
+            runningTasks.push_back(readyTaskStruct);
         }
 
         // Execute the task outside the lock
-        runnable->runTask(i, numTotalTasks);
+        runnable->runTask(subTaskIndex, numTotalTasks);
 
-        // Check if all tasks for this taskID are done
+        bool earlyBreak = false;
         {
+            // Delete it from the running Tasks and Check if all tasks for this taskID are done
             std::lock_guard<std::mutex> lock(queueMutex);
-            activeTasks--;
+            runningTasks.erase(std::remove(runningTasks.begin(), runningTasks.end(), readyTaskStruct), runningTasks.end());
             
 
-            if (taskGotCompleted) {  // No more tasks with this TaskID
-                for (auto& taskStruct : waitingQueue) {
-                    auto& deps = taskStruct.deps;
-                    size_t beforeSize = deps.size();
-                    
-                    // Remove taskID from dependencies
-                    deps.erase(std::remove(deps.begin(), deps.end(), taskID), deps.end());
+            for (int i = 0; i < runningTasks.size(); i++){
+                if (runningTasks[i].taskID == taskID){
+                    //some function of this task id is still running
+                    earlyBreak = true;
+                    break;
+                }
+            }
+        
+            if(!earlyBreak){
+                //the taskID was not in running tasks
 
-                    if (beforeSize > 0 && deps.empty()) {  // If it was dependent and now isn't
-                        taskGotReady = true;
+                for(int i = 0; i<readyTasks.size(); i++){
+                    if (readyTasks[i].taskID == taskID){
+                        earlyBreak = true;
+                        break;
                     }
                 }
             }
 
-            if (taskGotReady) {
-                ConvertToReady();
+            if (!earlyBreak){
+                // the task ID was in neither the running nor the ready tasks
+                //so it completed
+                completedTasks.push_back(taskID);
             }
 
-
-            if (readyQueue.empty() && waitingQueue.empty() && activeTasks == 0){
+            if (waitingTasks.empty() && readyTasks.empty() && runningTasks.empty()){
                 syncCondition.notify_all();
+
+                break;
             }
+        }
+        if (!earlyBreak){
+            AdjustDeps();
         }
     }
 }
 
 
 void TaskSystemParallelThreadPoolSleeping::ConvertToReady() {
-    for (auto it = waitingQueue.begin(); it != waitingQueue.end(); ) {
-        if (it->deps.empty()) {
-            readyQueue.push_back(ReadyTaskStruct{
-                it->taskID,
-                it->numTotalTasks,
-                it->numTotalTasks,
-                it->runnable
-            });
-            condition.notify_all();
-            it = waitingQueue.erase(it);  // Remove from waitingQueue after moving tasks
-        } else {
-            ++it;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex); 
+        
+        for (int i = 0; i < waitingTasks.size(); i++){
+            if (waitingTasks[i].deps.empty()){
+                //switch to running
+
+                for (int j = 0; j < waitingTasks[i].numTotalTasks; j++){
+                    readyTasks.push_back(ReadyTaskStruct{
+                        waitingTasks[i].taskID,
+                        waitingTasks[i].numTotalTasks,
+                        j,
+                        waitingTasks[i].runnable
+                    });
+                }
+
+                waitingTasks.erase(waitingTasks.begin() + i);
+                i--;
+            }
         }
+    }
+    readyCondition.notify_all();
+}
+
+void TaskSystemParallelThreadPoolSleeping::AdjustDeps() {
+    bool taskDepsEmpty = false;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+
+        for (int j = 0; j < waitingTasks.size(); j++){
+            if (waitingTasks[j].deps.empty()){
+                taskDepsEmpty = true;
+                continue;
+            }
+            for (int i = 0; i < completedTasks.size(); i++){
+                for (int k = 0; k < waitingTasks[j].deps.size(); k++){
+                    if (completedTasks[i] == waitingTasks[j].deps[k]){
+                        //the task has been complted to remove the dependency
+                        waitingTasks[j].deps.erase(waitingTasks[j].deps.begin() + k);
+                        k--;
+
+                        if (waitingTasks[j].deps.empty()){
+                            taskDepsEmpty = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (taskDepsEmpty){
+        ConvertToReady();
     }
 }
 

@@ -78,23 +78,29 @@ struct WaitingTaskStruct{
 struct ReadyTaskStruct{
     TaskID taskID;
     int numTotalTasks;
-    int remainingTasks;
+    int subTaskIndex;
     IRunnable *runnable;
+
+    bool operator== (const ReadyTaskStruct& other) const{
+        return taskID == other.taskID && subTaskIndex == other.subTaskIndex;
+    }
 };
 
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
     private:
         std::vector<std::thread> threads;
-        std::vector<WaitingTaskStruct> waitingQueue;
-        std::deque<ReadyTaskStruct> readyQueue;
+        std::vector<WaitingTaskStruct> waitingTasks;
+        std::deque<ReadyTaskStruct> readyTasks;
+        std::vector<ReadyTaskStruct> runningTasks;
+        std::vector<TaskID> completedTasks;
         std::mutex queueMutex;
-        std::condition_variable condition;
+        std::condition_variable readyCondition;
         std::condition_variable syncCondition;
         bool stop;
         TaskID currentTask;
-        std::atomic<int> activeTasks;
         void workerThread();
         void ConvertToReady();
+        void AdjustDeps();
     public:
         TaskSystemParallelThreadPoolSleeping(int num_threads);
         ~TaskSystemParallelThreadPoolSleeping();
